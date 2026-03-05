@@ -505,6 +505,22 @@ function ViewBidsModal({ job, onClose, showToast, onAccepted }) {
   const [bids, setBids] = useState([])
   const [loading, setLoading] = useState(true)
 
+
+  async function fetchProfile(userId, attempt = 0) {
+    try {
+      const p = await getProfile(userId)
+      setProfile(p)
+    } catch (e) {
+      if (attempt < 4) {
+        setTimeout(() => fetchProfile(userId, attempt + 1), 500)
+      } else {
+        console.error('Profile not found after retries:', e)
+        await signOut()
+        setSession(null)
+        setProfile(null)
+      }
+    }
+  }
   useEffect(() => {
     getBidsForJob(job.id).then(setBids).finally(() => setLoading(false))
   }, [job.id])
@@ -982,17 +998,7 @@ export default function App() {
       console.log('[Auth] getSession resolved, session:', s ? 'VALID user=' + s.user?.id?.slice(0,8) : 'NULL')
       if (!mounted) { console.log('[Auth] unmounted, skip'); return }
       setSession(s ?? null)
-      if (s) {
-        try {
-          console.log('[Auth] calling getProfile for', s.user?.id)
-          const p = await getProfile(s.user.id)
-          console.log('[Auth] getProfile result:', p ? 'OK role=' + p.role : 'null')
-          if (mounted) setProfile(p)
-        } catch (e) {
-          console.error('[Auth] getProfile FAILED:', e.message, e)
-          if (mounted) { setSession(null); setProfile(null) }
-        }
-      }
+      if (s) fetchProfile(s.user.id)
     }).catch(e => console.error('[Auth] getSession FAILED:', e))
 
     // ── Step 2: Listen for subsequent auth changes (sign-in, sign-out, token refresh).
@@ -1003,17 +1009,7 @@ export default function App() {
       if (!mounted) return
       if (event === 'INITIAL_SESSION') { console.log('[Auth] skipping INITIAL_SESSION'); return }
       setSession(s ?? null)
-      if (s) {
-        try {
-          const p = await getProfile(s.user.id)
-          if (mounted) setProfile(p)
-        } catch (e) {
-          console.error('Failed to load profile, signing out:', e)
-          if (mounted) { setSession(null); setProfile(null) }
-        }
-      } else {
-        setProfile(null)
-      }
+      if (s) { fetchProfile(s.user.id) } else { setProfile(null) }
     })
 
     return () => { mounted = false; subscription.unsubscribe() }
@@ -1031,7 +1027,7 @@ export default function App() {
     </>
   )
 
-  if (!session) return <AuthPage onAuth={() => {}} />
+  if (!session) return <AuthPage onAuth={() => { /* handled by onAuthStateChange */ }} />
 
   const isContractor = profile?.role === 'contractor'
   const TABS = [
