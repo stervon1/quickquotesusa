@@ -84,7 +84,8 @@ export async function getJobs({ trade, location, limit = 20, offset = 0 } = {}) 
   let query = supabase
     .from('jobs')
     .select(`
-      *,
+      id, title, description, trade, location, budget_min, budget_max,
+      area_size, status, bid_count, quote_request_count, created_at,
       owner:profiles(id, full_name, avatar_url, location, rating),
       photos:job_photos(url, order_index)
     `)
@@ -117,7 +118,7 @@ export async function getJob(jobId) {
 export async function getMyJobs(userId) {
   const { data, error } = await supabase
     .from('jobs')
-    .select(`*, photos:job_photos(url, order_index), bids(id, status)`)
+    .select(`*, quote_request_count, photos:job_photos(url, order_index), bids(id, status)`)
     .eq('owner_id', userId)
     .order('created_at', { ascending: false })
   if (error) throw error
@@ -273,6 +274,77 @@ export async function getTopContractors(trade, limit = 5) {
     .limit(limit)
   if (trade && trade !== 'All') query = query.eq('trade', trade)
   const { data, error } = await query
+  if (error) throw error
+  return data
+}
+
+// ── QUOTE REQUESTS (R2Q) ────────────────────────────────────
+
+export async function sendQuoteRequest({ jobId, contractorId, message }) {
+  // Deduct 1 quote credit
+  const { data: profile, error: profileError } = await supabase
+    .from('profiles')
+    .select('quote_credits_used, quote_credits_limit')
+    .eq('id', contractorId)
+    .single()
+  if (profileError) throw profileError
+  if (profile.quote_credits_used >= profile.quote_credits_limit) {
+    throw new Error('No quote credits remaining. Please upgrade your plan.')
+  }
+
+  // Insert quote request
+  const { data, error } = await supabase
+    .from('quote_requests')
+    .insert({ job_id: jobId, contractor_id: contractorId, message })
+    .select()
+    .single()
+  if (error) throw error
+
+  // Increment credits used
+  await supabase
+    .from('profiles')
+    .update({ quote_credits_used: profile.quote_credits_used + 1 })
+    .eq('id', contractorId)
+
+  return data
+}
+
+export async function getQuoteRequestsForJob(jobId) {
+  const { data, error } = await supabase
+    .from('quote_requests')
+    .select(`
+      *,
+      contractor:profiles(id, full_name, avatar_url, company_name, trade, rating, review_count, jobs_completed, is_insured, location)
+    `)
+    .eq('job_id', jobId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data
+}
+
+export async function getMyQuoteRequests(contractorId) {
+  const { data, error } = await supabase
+    .from('quote_requests')
+    .select(`
+      *,
+      job:jobs(id, title, trade, location, budget_min, budget_max, status,
+        owner:profiles(id, full_name, avatar_url))
+    `)
+    .eq('contractor_id', contractorId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data
+}
+
+export async function updateQuoteRequestStatus(requestId, status) {
+  const updates = { status }
+  if (status === 'approved') updates.chat_enabled = true
+  const { data, error } = await supabase
+    .from('quote_requests')
+    .update(updates)
+    .eq('id', requestId)
+    .select()
+    .single()
   if (error) throw error
   return data
 }

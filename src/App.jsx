@@ -6,6 +6,7 @@ import {
   getBidsForJob, getMyBids, submitBid, updateBidStatus,
   getTopContractors, getPortfolio, getReviews,
   updateProfile, uploadAvatar,
+  sendQuoteRequest, getQuoteRequestsForJob, getMyQuoteRequests, updateQuoteRequestStatus,
 } from './lib/supabase'
 
 // ── THEME ────────────────────────────────────────────────────
@@ -59,6 +60,8 @@ html,body{font-family:'Barlow',sans-serif;background:${C.off};color:${C.dark};mi
 .btn-navy:hover{background:#263a8a}
 .btn-red{background:${C.red};color:#fff}
 .btn-red:hover{background:#cc3d3d}
+.btn-green{background:#22c55e;color:#fff}
+.btn-green:hover{background:#16a34a}
 .btn-outline{background:transparent;color:${C.navy};border:2px solid ${C.navy}}
 .btn-outline:hover{background:${C.navy};color:#fff}
 .btn-ghost{background:transparent;color:${C.mid};border:2px solid ${C.light}}
@@ -109,11 +112,11 @@ select.input{cursor:pointer}
 .meta-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px}
 .meta{display:flex;align-items:center;gap:4px;font-size:12px;font-weight:600;color:${C.mid}}
 .job-footer{display:flex;align-items:center;gap:8px;padding:0 16px 14px}
-.bid-count{margin-left:auto;font-size:13px;font-weight:700;color:${C.sky}}
+.quote-count{margin-left:auto;font-size:13px;font-weight:700;color:${C.sky}}
 
 /* MODAL */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;padding:16px}
-.modal{background:#fff;border-radius:16px;width:100%;max-width:520px;max-height:90vh;overflow-y:auto;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal{background:#fff;border-radius:16px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
 .modal-title{font-family:'Barlow Condensed',sans-serif;font-size:26px;font-weight:900;color:${C.navy};margin-bottom:20px;text-transform:uppercase}
 .modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:4px}
 
@@ -148,8 +151,13 @@ select.input{cursor:pointer}
 .spinner{width:40px;height:40px;border:3px solid ${C.light};border-top-color:${C.sky};border-radius:50%;animation:spin .7s linear infinite;margin:60px auto}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* BID ROW */
+/* BID / REQUEST ROW */
 .bid-row{background:#fff;border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:12px;margin-bottom:10px;box-shadow:0 1px 8px rgba(0,0,0,.05)}
+
+/* QUOTE REQUEST ROW */
+.qr-row{background:${C.off};border-radius:12px;padding:14px 16px;margin-bottom:10px;border:1px solid ${C.light}}
+.qr-row.approved{border-color:#22c55e;background:#f0fdf4}
+.qr-row.declined{border-color:${C.light};opacity:.6}
 
 /* PRICING */
 .price-card{background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,.07);transition:transform .2s}
@@ -301,12 +309,14 @@ function AuthPage({ onAuth }) {
 }
 
 // ── JOB CARD ─────────────────────────────────────────────────
-function JobCard({ job, onBid, isContractor, myBids = [] }) {
+function JobCard({ job, onRequestToQuote, onViewRequests, isContractor, myQuoteRequests = [] }) {
   const photos = job.photos || []
-  const hasBid = myBids.some(b => b.job_id === job.id)
+  const hasRequested = myQuoteRequests.some(r => r.job_id === job.id)
+  const myRequest = myQuoteRequests.find(r => r.job_id === job.id)
   const emoji = TRADE_EMOJI[job.trade] || '🔨'
   const n = photos.length || 1
   const cls = n >= 3 ? 'n3' : n === 2 ? 'n2' : 'n1'
+  const quoteCount = job.quote_request_count || 0
 
   return (
     <div className="job-card">
@@ -340,13 +350,307 @@ function JobCard({ job, onBid, isContractor, myBids = [] }) {
 
       <div className="job-footer">
         {isContractor ? (
-          hasBid
-            ? <span className="badge badge-green">✓ Bid Submitted</span>
-            : <button className="btn btn-sky btn-sm" onClick={() => onBid(job)}>Submit Bid</button>
+          hasRequested ? (
+            <span className={`badge ${myRequest?.status === 'approved' ? 'badge-green' : myRequest?.status === 'declined' ? 'badge-red' : 'badge-yellow'}`}>
+              {myRequest?.status === 'approved' ? '✓ Approved' : myRequest?.status === 'declined' ? 'Declined' : '⏳ Pending Approval'}
+            </span>
+          ) : (
+            <button className="btn btn-sky btn-sm" onClick={() => onRequestToQuote(job)}>
+              Request to Quote
+            </button>
+          )
         ) : (
-          <button className="btn btn-outline btn-sm" onClick={() => onBid(job)}>View Bids ({job.bid_count || 0})</button>
+          <button className="btn btn-outline btn-sm" onClick={() => onViewRequests(job)}>
+            View Requests ({quoteCount})
+          </button>
         )}
-        <div className="bid-count">💬 {job.bid_count || 0} bids</div>
+        <div className="quote-count">💬 {quoteCount} {quoteCount === 1 ? 'request' : 'requests'}</div>
+      </div>
+    </div>
+  )
+}
+
+// ── QUOTE REQUEST MODAL (contractor sends intro) ──────────────
+function QuoteRequestModal({ job, profile, onClose, onSubmitted, showToast }) {
+  const [message, setMessage] = useState('')
+  const [loading, setLoading] = useState(false)
+  const creditsLeft = (profile.quote_credits_limit || 0) - (profile.quote_credits_used || 0)
+
+  async function submit() {
+    if (!message.trim()) return
+    setLoading(true)
+    try {
+      await sendQuoteRequest({ jobId: job.id, contractorId: profile.id, message })
+      showToast('Quote request sent!')
+      onSubmitted()
+      onClose()
+    } catch(e) {
+      showToast('Error: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-title">📋 Request to Quote</div>
+
+        {/* Job summary */}
+        <div style={{ background: C.off, borderRadius: 10, padding: 12, marginBottom: 18 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: C.navy }}>{job.title}</div>
+          <div style={{ fontSize: 12, color: C.mid }}>📍 {job.location} · Budget: {fmt$(job.budget_min)} – {fmt$(job.budget_max)}</div>
+        </div>
+
+        {/* How it works */}
+        <div style={{ background: 'rgba(75,191,237,.08)', border: `1px solid ${C.sky}`, borderRadius: 10, padding: 12, marginBottom: 18, fontSize: 13 }}>
+          <div style={{ fontWeight: 700, color: C.navy, marginBottom: 6 }}>How it works:</div>
+          <div style={{ color: '#555', lineHeight: 1.6 }}>
+            1. Send an intro message — the homeowner approves or declines<br/>
+            2. If approved, you submit your formal bid (price + timeline)<br/>
+            3. Chat unlocks so you can discuss details<br/>
+            <strong style={{ color: C.red }}>Costs 1 quote credit</strong> — you have <strong>{creditsLeft}</strong> remaining
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="label">Intro Message *</label>
+          <textarea
+            className="input"
+            rows={4}
+            placeholder="Introduce yourself — your experience, why you're a good fit, any questions about the project…"
+            value={message}
+            onChange={e => setMessage(e.target.value)}
+          />
+        </div>
+
+        {creditsLeft <= 0 && (
+          <div className="error-msg" style={{ marginBottom: 12 }}>⚠️ No quote credits remaining. Please upgrade your plan.</div>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-sky" onClick={submit} disabled={loading || creditsLeft <= 0 || !message.trim()}>
+            {loading ? 'Sending…' : 'Send Request →'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── QUOTE REQUESTS PANEL (homeowner approves/declines) ────────
+function QuoteRequestsPanel({ job, onClose, showToast, onUpdated }) {
+  const [requests, setRequests] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [activeBidJob, setActiveBidJob] = useState(null) // for approved contractor submitting bid
+
+  const load = () => getQuoteRequestsForJob(job.id).then(setRequests).finally(() => setLoading(false))
+  useEffect(() => { load() }, [job.id])
+
+  async function handleAction(requestId, status) {
+    try {
+      await updateQuoteRequestStatus(requestId, status)
+      showToast(status === 'approved' ? 'Request approved!' : 'Request declined.')
+      load()
+      onUpdated?.()
+    } catch(e) {
+      showToast('Error: ' + e.message)
+    }
+  }
+
+  const pending = requests.filter(r => r.status === 'pending')
+  const approved = requests.filter(r => r.status === 'approved')
+  const declined = requests.filter(r => r.status === 'declined')
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 620 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-title">📬 Quote Requests — "{job.title}"</div>
+
+        {loading ? <div className="spinner" /> : requests.length === 0 ? (
+          <p style={{ color: C.mid, textAlign:'center', padding: '24px 0' }}>No quote requests yet.</p>
+        ) : (
+          <>
+            {/* Pending */}
+            {pending.length > 0 && (
+              <>
+                <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight: 800, fontSize: 14, color: C.mid, letterSpacing: '.5px', textTransform:'uppercase', marginBottom: 8 }}>
+                  Pending ({pending.length})
+                </div>
+                {pending.map(r => (
+                  <QuoteRequestRow key={r.id} request={r} onApprove={() => handleAction(r.id, 'approved')} onDecline={() => handleAction(r.id, 'declined')} />
+                ))}
+              </>
+            )}
+
+            {/* Approved */}
+            {approved.length > 0 && (
+              <>
+                <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight: 800, fontSize: 14, color: '#065f46', letterSpacing: '.5px', textTransform:'uppercase', margin: '14px 0 8px' }}>
+                  Approved ({approved.length})
+                </div>
+                {approved.map(r => (
+                  <QuoteRequestRow key={r.id} request={r} approved />
+                ))}
+              </>
+            )}
+
+            {/* Declined */}
+            {declined.length > 0 && (
+              <>
+                <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight: 800, fontSize: 14, color: C.mid, letterSpacing: '.5px', textTransform:'uppercase', margin: '14px 0 8px' }}>
+                  Declined ({declined.length})
+                </div>
+                {declined.map(r => (
+                  <QuoteRequestRow key={r.id} request={r} declined />
+                ))}
+              </>
+            )}
+          </>
+        )}
+
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function QuoteRequestRow({ request, onApprove, onDecline, approved, declined }) {
+  const c = request.contractor
+  const statusCls = approved ? 'approved' : declined ? 'declined' : ''
+
+  return (
+    <div className={`qr-row ${statusCls}`}>
+      <div style={{ display:'flex', alignItems:'center', gap: 12, marginBottom: 10 }}>
+        <Avatar name={c?.company_name || c?.full_name} url={c?.avatar_url} size={42} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: C.navy }}>{c?.company_name || c?.full_name}</div>
+          <div style={{ fontSize: 12, color: C.mid }}>
+            {c?.trade} · {c?.location}
+            {c?.rating > 0 && <> · <Stars rating={c.rating} size={11} /></>}
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: C.mid }}>{fmtDate(request.created_at)}</div>
+      </div>
+
+      {request.message && (
+        <div style={{ fontSize: 14, color: '#444', lineHeight: 1.55, background: '#fff', borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>
+          "{request.message}"
+        </div>
+      )}
+
+      {!approved && !declined && (
+        <div style={{ display:'flex', gap: 8 }}>
+          <button className="btn btn-green btn-sm" onClick={onApprove}>✓ Approve</button>
+          <button className="btn btn-ghost btn-sm" onClick={onDecline}>Decline</button>
+        </div>
+      )}
+
+      {approved && <span className="badge badge-green">✓ Approved — bid submitted in My Jobs</span>}
+      {declined && <span className="badge badge-red">Declined</span>}
+    </div>
+  )
+}
+
+// ── FORMAL BID MODAL (contractor submits after approval) ──────
+function BidModal({ job, profile, onClose, onSubmitted, showToast }) {
+  const [form, setForm] = useState({ amount:'', timeline:'', message:'' })
+  const [loading, setLoading] = useState(false)
+  const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
+
+  async function submit() {
+    if (!form.amount) return
+    setLoading(true)
+    try {
+      await submitBid({ jobId: job.id, contractorId: profile.id, amount: Number(form.amount), timeline: form.timeline, message: form.message })
+      showToast('Bid submitted!')
+      onSubmitted()
+      onClose()
+    } catch(e) {
+      showToast('Error: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-title">💼 Submit Formal Bid</div>
+        <div style={{ background: C.off, borderRadius: 10, padding: 12, marginBottom: 18 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: C.navy }}>{job.title}</div>
+          <div style={{ fontSize: 12, color: C.mid }}>📍 {job.location} · Budget: {fmt$(job.budget_min)} – {fmt$(job.budget_max)}</div>
+        </div>
+        <div className="form-group">
+          <label className="label">Your Bid Amount ($) *</label>
+          <input className="input" type="number" placeholder="4200" value={form.amount} onChange={set('amount')} />
+        </div>
+        <div className="form-group">
+          <label className="label">Estimated Timeline</label>
+          <input className="input" placeholder="e.g. 5 business days" value={form.timeline} onChange={set('timeline')} />
+        </div>
+        <div className="form-group">
+          <label className="label">Message to Client</label>
+          <textarea className="input" placeholder="Confirm your approach, materials, schedule…" value={form.message} onChange={set('message')} />
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-red" onClick={submit} disabled={loading}>{loading ? 'Submitting…' : 'Submit Bid →'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── VIEW BIDS MODAL (homeowner — after approval) ─────────────
+function ViewBidsModal({ job, onClose, showToast, onAccepted }) {
+  const [bids, setBids] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    getBidsForJob(job.id).then(setBids).finally(() => setLoading(false))
+  }, [job.id])
+
+  async function accept(bid) {
+    try {
+      await updateBidStatus(bid.id, 'accepted')
+      showToast(`Accepted bid from ${bid.contractor?.full_name}!`)
+      onAccepted?.()
+      onClose()
+    } catch(e) { showToast('Error: ' + e.message) }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-title">💼 Bids — "{job.title}"</div>
+        {loading ? <div className="spinner" /> : bids.length === 0
+          ? <p style={{ color: C.mid, textAlign:'center', padding: '24px 0' }}>No bids yet from approved contractors.</p>
+          : bids.map(b => (
+            <div key={b.id} className="bid-row" style={{ flexWrap:'wrap', gap: 10 }}>
+              <Avatar name={b.contractor?.full_name || b.contractor?.company_name} url={b.contractor?.avatar_url} size={40} />
+              <div style={{ flex: 1, minWidth: 140 }}>
+                <div style={{ fontWeight: 700, fontSize: 15, color: C.navy }}>{b.contractor?.company_name || b.contractor?.full_name}</div>
+                <Stars rating={b.contractor?.rating} size={12} />
+                {b.timeline && <div style={{ fontSize: 12, color: C.mid }}>⏱ {b.timeline}</div>}
+                {b.message && <div style={{ fontSize: 13, color: '#555', marginTop: 4 }}>{b.message}</div>}
+              </div>
+              <div style={{ textAlign:'right' }}>
+                <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight: 900, fontSize: 24, color: C.sky }}>{fmt$(b.amount)}</div>
+                {b.status === 'pending'
+                  ? <button className="btn btn-sky btn-sm" style={{ marginTop: 4 }} onClick={() => accept(b)}>Accept</button>
+                  : <span className="badge badge-green">✓ Accepted</span>
+                }
+              </div>
+            </div>
+          ))
+        }
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+        </div>
       </div>
     </div>
   )
@@ -450,115 +754,14 @@ function PostJobModal({ profile, onClose, onPosted, showToast }) {
   )
 }
 
-// ── SUBMIT BID MODAL ─────────────────────────────────────────
-function BidModal({ job, profile, onClose, onSubmitted, showToast }) {
-  const [form, setForm] = useState({ amount:'', timeline:'', message:'' })
-  const [loading, setLoading] = useState(false)
-  const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
-
-  async function submit() {
-    if (!form.amount) return
-    setLoading(true)
-    try {
-      await submitBid({ jobId: job.id, contractorId: profile.id, amount: Number(form.amount), timeline: form.timeline, message: form.message })
-      showToast('Bid submitted!')
-      onSubmitted()
-      onClose()
-    } catch(e) {
-      showToast('Error: ' + e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-title">💼 Submit a Bid</div>
-        <div style={{ background: C.off, borderRadius: 10, padding: 12, marginBottom: 18 }}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: C.navy }}>{job.title}</div>
-          <div style={{ fontSize: 12, color: C.mid }}>📍 {job.location} · Budget: {fmt$(job.budget_min)} – {fmt$(job.budget_max)}</div>
-        </div>
-        <div className="form-group">
-          <label className="label">Your Bid Amount ($) *</label>
-          <input className="input" type="number" placeholder="4200" value={form.amount} onChange={set('amount')} />
-        </div>
-        <div className="form-group">
-          <label className="label">Estimated Timeline</label>
-          <input className="input" placeholder="e.g. 5 business days" value={form.timeline} onChange={set('timeline')} />
-        </div>
-        <div className="form-group">
-          <label className="label">Message to Client</label>
-          <textarea className="input" placeholder="Introduce yourself and describe your approach…" value={form.message} onChange={set('message')} />
-        </div>
-        <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-red" onClick={submit} disabled={loading}>{loading ? 'Submitting…' : 'Submit Bid →'}</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── VIEW BIDS MODAL (homeowner) ──────────────────────────────
-function ViewBidsModal({ job, onClose, showToast, onAccepted }) {
-  const [bids, setBids] = useState([])
-  const [loading, setLoading] = useState(true)
-
-
-  useEffect(() => {
-    getBidsForJob(job.id).then(setBids).finally(() => setLoading(false))
-  }, [job.id])
-
-  async function accept(bid) {
-    try {
-      await updateBidStatus(bid.id, 'accepted')
-      showToast(`Accepted bid from ${bid.contractor?.full_name}!`)
-      onAccepted?.()
-      onClose()
-    } catch(e) { showToast('Error: ' + e.message) }
-  }
-
-  return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-title">📬 Bids for "{job.title}"</div>
-        {loading ? <div className="spinner" /> : bids.length === 0
-          ? <p style={{ color: C.mid, textAlign:'center', padding: '24px 0' }}>No bids yet. Check back soon!</p>
-          : bids.map(b => (
-            <div key={b.id} className="bid-row" style={{ flexWrap:'wrap', gap: 10 }}>
-              <Avatar name={b.contractor?.full_name || b.contractor?.company_name} url={b.contractor?.avatar_url} size={40} />
-              <div style={{ flex: 1, minWidth: 140 }}>
-                <div style={{ fontWeight: 700, fontSize: 15, color: C.navy }}>{b.contractor?.company_name || b.contractor?.full_name}</div>
-                <Stars rating={b.contractor?.rating} size={12} />
-                {b.timeline && <div style={{ fontSize: 12, color: C.mid }}>⏱ {b.timeline}</div>}
-                {b.message && <div style={{ fontSize: 13, color: '#555', marginTop: 4 }}>{b.message}</div>}
-              </div>
-              <div style={{ textAlign:'right' }}>
-                <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight: 900, fontSize: 24, color: C.sky }}>{fmt$(b.amount)}</div>
-                {b.status === 'pending'
-                  ? <button className="btn btn-sky btn-sm" style={{ marginTop: 4 }} onClick={() => accept(b)}>Accept</button>
-                  : <span className="badge badge-green">✓ Accepted</span>
-                }
-              </div>
-            </div>
-          ))
-        }
-        <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── FEED TAB ─────────────────────────────────────────────────
 function FeedTab({ profile, showToast }) {
   const [jobs, setJobs] = useState([])
   const [trade, setTrade] = useState('All')
   const [loading, setLoading] = useState(true)
-  const [activeBidJob, setActiveBidJob] = useState(null)
-  const [myBids, setMyBids] = useState([])
+  const [activeRequestJob, setActiveRequestJob] = useState(null)   // contractor: send quote request
+  const [activeViewJob, setActiveViewJob] = useState(null)          // homeowner: view quote requests
+  const [myQuoteRequests, setMyQuoteRequests] = useState([])
   const [showPost, setShowPost] = useState(false)
   const [topContractors, setTopContractors] = useState([])
   const isContractor = profile.role === 'contractor'
@@ -572,7 +775,10 @@ function FeedTab({ profile, showToast }) {
       ])
       setJobs(j)
       setTopContractors(tc)
-      if (isContractor) setMyBids(await getMyBids(profile.id))
+      if (isContractor) {
+        const myReqs = await getMyQuoteRequests(profile.id)
+        setMyQuoteRequests(myReqs)
+      }
     } finally { setLoading(false) }
   }
 
@@ -596,8 +802,14 @@ function FeedTab({ profile, showToast }) {
           : jobs.length === 0
             ? <div style={{ textAlign:'center', padding:'40px 0', color: C.mid }}>No open jobs in this category yet.</div>
             : jobs.map(j => (
-              <JobCard key={j.id} job={j} isContractor={isContractor} myBids={myBids}
-                onBid={setActiveBidJob} />
+              <JobCard
+                key={j.id}
+                job={j}
+                isContractor={isContractor}
+                myQuoteRequests={myQuoteRequests}
+                onRequestToQuote={setActiveRequestJob}
+                onViewRequests={setActiveViewJob}
+              />
             ))
         }
       </div>
@@ -633,10 +845,26 @@ function FeedTab({ profile, showToast }) {
       </div>
 
       {showPost && <PostJobModal profile={profile} onClose={() => setShowPost(false)} onPosted={load} showToast={showToast} />}
-      {activeBidJob && (
-        isContractor
-          ? <BidModal job={activeBidJob} profile={profile} onClose={() => setActiveBidJob(null)} onSubmitted={load} showToast={showToast} />
-          : <ViewBidsModal job={activeBidJob} onClose={() => setActiveBidJob(null)} showToast={showToast} onAccepted={load} />
+
+      {/* Contractor: send quote request */}
+      {activeRequestJob && isContractor && (
+        <QuoteRequestModal
+          job={activeRequestJob}
+          profile={profile}
+          onClose={() => setActiveRequestJob(null)}
+          onSubmitted={load}
+          showToast={showToast}
+        />
+      )}
+
+      {/* Homeowner: view + approve/decline requests */}
+      {activeViewJob && !isContractor && (
+        <QuoteRequestsPanel
+          job={activeViewJob}
+          onClose={() => setActiveViewJob(null)}
+          showToast={showToast}
+          onUpdated={load}
+        />
       )}
     </div>
   )
@@ -646,6 +874,7 @@ function FeedTab({ profile, showToast }) {
 function MyJobsTab({ profile, showToast }) {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
+  const [viewRequestsJob, setViewRequestsJob] = useState(null)
   const [viewBidsJob, setViewBidsJob] = useState(null)
 
   const load = () => getMyJobs(profile.id).then(setJobs).finally(() => setLoading(false))
@@ -655,71 +884,116 @@ function MyJobsTab({ profile, showToast }) {
     <div>
       <div className="sec-title">📋 My Posted Jobs</div>
       {loading ? <div className="spinner" /> : jobs.length === 0
-        ? <div style={{ textAlign:'center', padding:'40px 0', color: C.mid }}>You haven't posted any jobs yet. Go to the Feed to post one!</div>
-        : jobs.map(j => (
-          <div key={j.id} className="card" style={{ marginBottom: 14 }}>
-            <div className="card-pad">
-              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap: 8 }}>
-                <div>
-                  <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 900, color: C.navy }}>{j.title}</div>
-                  <div style={{ fontSize: 13, color: C.mid }}>📍 {j.location} · {fmtDate(j.created_at)} · {j.trade}</div>
-                </div>
-                <div style={{ display:'flex', gap: 8, alignItems:'center' }}>
-                  <span className={`badge ${j.status === 'open' ? 'badge-green' : 'badge-navy'}`}>{j.status}</span>
-                  <button className="btn btn-sky btn-sm" onClick={() => setViewBidsJob(j)}>View {j.bid_count||0} Bids</button>
+        ? <div style={{ textAlign:'center', padding:'40px 0', color: C.mid }}>You haven't posted any jobs yet.</div>
+        : jobs.map(j => {
+            const qCount = j.quote_request_count || 0
+            const bCount = j.bid_count || 0
+            return (
+              <div key={j.id} className="card" style={{ marginBottom: 14 }}>
+                <div className="card-pad">
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap: 8 }}>
+                    <div>
+                      <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 900, color: C.navy }}>{j.title}</div>
+                      <div style={{ fontSize: 13, color: C.mid }}>📍 {j.location} · {fmtDate(j.created_at)} · {j.trade}</div>
+                    </div>
+                    <div style={{ display:'flex', gap: 8, alignItems:'center', flexWrap:'wrap' }}>
+                      <span className={`badge ${j.status === 'open' ? 'badge-green' : 'badge-navy'}`}>{j.status}</span>
+                      <button className="btn btn-outline btn-sm" onClick={() => setViewRequestsJob(j)}>
+                        📋 {qCount} {qCount === 1 ? 'Request' : 'Requests'}
+                      </button>
+                      {bCount > 0 && (
+                        <button className="btn btn-sky btn-sm" onClick={() => setViewBidsJob(j)}>
+                          💼 {bCount} {bCount === 1 ? 'Bid' : 'Bids'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {j.budget_min && (
+                    <div style={{ fontSize: 13, color: C.mid, marginTop: 6 }}>Budget: {fmt$(j.budget_min)} – {fmt$(j.budget_max)}</div>
+                  )}
                 </div>
               </div>
-              {j.budget_min && (
-                <div style={{ fontSize: 13, color: C.mid, marginTop: 6 }}>Budget: {fmt$(j.budget_min)} – {fmt$(j.budget_max)}</div>
-              )}
-            </div>
-          </div>
-        ))
+            )
+          })
       }
-      {viewBidsJob && <ViewBidsModal job={viewBidsJob} onClose={() => setViewBidsJob(null)} showToast={showToast} onAccepted={load} />}
+      {viewRequestsJob && (
+        <QuoteRequestsPanel
+          job={viewRequestsJob}
+          onClose={() => setViewRequestsJob(null)}
+          showToast={showToast}
+          onUpdated={load}
+        />
+      )}
+      {viewBidsJob && (
+        <ViewBidsModal job={viewBidsJob} onClose={() => setViewBidsJob(null)} showToast={showToast} onAccepted={load} />
+      )}
     </div>
   )
 }
 
-// ── MY BIDS TAB (contractor) ─────────────────────────────────
-function MyBidsTab({ profile }) {
-  const [bids, setBids] = useState([])
+// ── MY QUOTE REQUESTS TAB (contractor) ───────────────────────
+function MyQuoteRequestsTab({ profile, showToast }) {
+  const [requests, setRequests] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
+  const [activeBidJob, setActiveBidJob] = useState(null)
 
-  useEffect(() => {
-    getMyBids(profile.id).then(setBids).finally(() => setLoading(false))
-  }, [])
+  const load = () => getMyQuoteRequests(profile.id).then(setRequests).finally(() => setLoading(false))
+  useEffect(() => { load() }, [])
 
-  const filtered = filter === 'all' ? bids : bids.filter(b => b.status === filter)
+  const filtered = filter === 'all' ? requests : requests.filter(r => r.status === filter)
 
   return (
     <div>
-      <div className="sec-title">💼 My Submitted Bids</div>
+      <div className="sec-title">📋 My Quote Requests</div>
       <div style={{ display:'flex', gap: 8, marginBottom: 16, flexWrap:'wrap' }}>
-        {['all','pending','accepted','declined'].map(s => (
+        {['all','pending','approved','declined'].map(s => (
           <button key={s} className={`chip${filter===s?' active':''}`} onClick={() => setFilter(s)}>
             {s.charAt(0).toUpperCase() + s.slice(1)}
+            {s === 'all' ? ` (${requests.length})` : ` (${requests.filter(r=>r.status===s).length})`}
           </button>
         ))}
       </div>
+
       {loading ? <div className="spinner" /> : filtered.length === 0
-        ? <div style={{ textAlign:'center', padding:'40px 0', color: C.mid }}>No bids in this category.</div>
-        : filtered.map(b => (
-          <div key={b.id} className="bid-row" style={{ flexWrap:'wrap' }}>
-            <div style={{ fontSize: 28 }}>{TRADE_EMOJI[b.job?.trade] || '🔨'}</div>
-            <div style={{ flex: 1, minWidth: 140 }}>
-              <div style={{ fontWeight: 700, fontSize: 15, color: C.navy }}>{b.job?.title}</div>
-              <div style={{ fontSize: 12, color: C.mid }}>📍 {b.job?.location} · {fmtDate(b.created_at)}</div>
-              {b.timeline && <div style={{ fontSize: 12, color: C.mid }}>⏱ {b.timeline}</div>}
+        ? <div style={{ textAlign:'center', padding:'40px 0', color: C.mid }}>No requests in this category.</div>
+        : filtered.map(r => (
+          <div key={r.id} className="card" style={{ marginBottom: 12 }}>
+            <div className="card-pad">
+              <div style={{ display:'flex', alignItems:'flex-start', gap: 12 }}>
+                <div style={{ fontSize: 28 }}>{TRADE_EMOJI[r.job?.trade] || '🔨'}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 16, color: C.navy }}>{r.job?.title}</div>
+                  <div style={{ fontSize: 12, color: C.mid }}>📍 {r.job?.location} · Sent {fmtDate(r.created_at)}</div>
+                  {r.message && (
+                    <div style={{ fontSize: 13, color: '#555', marginTop: 6, fontStyle:'italic' }}>"{r.message}"</div>
+                  )}
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap: 8 }}>
+                  <span className={`badge ${r.status==='approved'?'badge-green':r.status==='declined'?'badge-red':'badge-yellow'}`}>
+                    {r.status === 'approved' ? '✓ Approved' : r.status === 'declined' ? 'Declined' : '⏳ Pending'}
+                  </span>
+                  {r.status === 'approved' && (
+                    <button className="btn btn-sky btn-sm" onClick={() => setActiveBidJob(r.job)}>
+                      Submit Bid →
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
-            <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight: 900, fontSize: 24, color: C.sky }}>{fmt$(b.amount)}</div>
-            <span className={`badge ${b.status==='accepted'?'badge-green':b.status==='declined'?'badge-red':'badge-yellow'}`}>
-              {b.status === 'accepted' ? '✓ Accepted' : b.status === 'declined' ? 'Declined' : 'Pending'}
-            </span>
           </div>
         ))
       }
+
+      {activeBidJob && (
+        <BidModal
+          job={activeBidJob}
+          profile={profile}
+          onClose={() => setActiveBidJob(null)}
+          onSubmitted={load}
+          showToast={showToast}
+        />
+      )}
     </div>
   )
 }
@@ -757,6 +1031,10 @@ function ProfileTab({ profile, onUpdate, showToast }) {
     ? `linear-gradient(135deg,${C.red},#b83535)`
     : `linear-gradient(135deg,${C.navy},#2A4BAF)`
 
+  const creditsUsed = profile.quote_credits_used || 0
+  const creditsLimit = profile.quote_credits_limit || 10
+  const creditsLeft = creditsLimit - creditsUsed
+
   return (
     <div className={isContractor ? 'two-col' : ''}>
       <div>
@@ -781,7 +1059,7 @@ function ProfileTab({ profile, onUpdate, showToast }) {
           <div className="profile-stats">
             {(isContractor
               ? [['Jobs Done', profile.jobs_completed||0], ['Reviews', profile.review_count||0], ['Rating', Number(profile.rating||0).toFixed(1)]]
-              : [['Posted Jobs', '—'], ['Bids Received', '—'], ['Completed', '—']]
+              : [['Posted Jobs', '—'], ['Requests In', '—'], ['Completed', '—']]
             ).map(([l,v]) => (
               <div key={l}><div className="pstat-n">{v}</div><div className="pstat-l">{l}</div></div>
             ))}
@@ -826,17 +1104,21 @@ function ProfileTab({ profile, onUpdate, showToast }) {
       {isContractor && (
         <div>
           <div className="card" style={{ marginBottom: 16 }}>
-            <div className="card-header">⚡ Your Plan</div>
+            <div className="card-header">⚡ Quote Credits</div>
             <div className="card-pad" style={{ textAlign:'center' }}>
               <div style={{ background: C.sky, color: C.navy, borderRadius: 20, display:'inline-block', padding:'2px 12px', fontSize: 12, fontWeight: 800, marginBottom: 8, fontFamily:"'Barlow Condensed',sans-serif" }}>
                 {(profile.plan||'starter').toUpperCase()}
               </div>
-              <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize: 40, fontWeight: 900, color: C.navy }}>
-                {profile.plan === 'pro' ? '$5.99' : profile.plan === 'unlimited' ? '$9.99' : '$1.99'}
+              <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize: 52, fontWeight: 900, color: creditsLeft > 0 ? C.navy : C.red, lineHeight: 1 }}>
+                {creditsLeft}
               </div>
-              <div style={{ fontSize: 12, color: C.mid, marginBottom: 14 }}>per month</div>
-              <div style={{ fontSize: 13, color: '#555', marginBottom: 14 }}>
-                {profile.bids_used||0} / {profile.plan === 'unlimited' ? '∞' : profile.bids_limit} bids used
+              <div style={{ fontSize: 13, color: C.mid, marginBottom: 4 }}>credits remaining</div>
+              <div style={{ fontSize: 12, color: C.mid, marginBottom: 14 }}>
+                {creditsUsed} used of {creditsLimit} total
+              </div>
+              {/* Credit bar */}
+              <div style={{ height: 8, background: C.light, borderRadius: 4, marginBottom: 16 }}>
+                <div style={{ width: `${Math.min(100,(creditsUsed/creditsLimit)*100)}%`, height: 8, background: creditsLeft > 3 ? C.sky : C.red, borderRadius: 4, transition: 'width .3s' }} />
               </div>
               <button className="btn btn-outline btn-full">Upgrade Plan</button>
             </div>
@@ -918,15 +1200,15 @@ function ProfileTab({ profile, onUpdate, showToast }) {
 // ── PRICING TAB ──────────────────────────────────────────────
 function PricingTab() {
   const plans = [
-    { tier:'Starter', price:'$1.99', featured:false, bids:'10 bids / month', features:['Basic profile page','Email notifications','Standard listing','Job feed access'] },
-    { tier:'Pro',     price:'$5.99', featured:true,  bids:'50 bids / month', features:['Featured profile badge','Push notifications','Priority listing','Analytics dashboard','Client messaging priority'] },
-    { tier:'Unlimited', price:'$9.99', featured:false, bids:'Unlimited bids', features:['Top placement in search','Advanced analytics','Dedicated support','Early access to new features'] },
+    { tier:'Starter', price:'$29', featured:false, credits:'10 quote credits / mo', features:['Basic profile page','Email notifications','Standard listing','Job feed access'] },
+    { tier:'Pro',     price:'$49', featured:true,  credits:'30 quote credits / mo', features:['Featured profile badge','Push notifications','Priority listing','Analytics dashboard','Client messaging priority'] },
+    { tier:'Unlimited', price:'$79', featured:false, credits:'Unlimited credits', features:['Top placement in search','Advanced analytics','Dedicated support','Early access to new features'] },
   ]
   return (
     <div>
       <div style={{ textAlign:'center', marginBottom: 28 }}>
-        <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize: 34, fontWeight: 900, color: C.navy, textTransform:'uppercase' }}>Contractor Pricing Plans</div>
-        <p style={{ color: C.mid, marginTop: 8, fontSize: 15 }}>Buy bids and grow your business. No hidden fees, cancel anytime.</p>
+        <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize: 34, fontWeight: 900, color: C.navy, textTransform:'uppercase' }}>Contractor Plans</div>
+        <p style={{ color: C.mid, marginTop: 8, fontSize: 15 }}>Quote credits to grow your business. No hidden fees, cancel anytime.</p>
       </div>
       <div className="three-col">
         {plans.map(p => (
@@ -936,7 +1218,7 @@ function PricingTab() {
               <div className="price-tier" style={{ color: p.featured ? '#fff' : C.navy }}>{p.tier}</div>
               <div className="price-amount" style={{ color: p.featured ? C.sky : C.navy }}>{p.price}</div>
               <div style={{ fontSize: 12, color: p.featured ? 'rgba(255,255,255,.6)' : C.mid }}>/month</div>
-              <div style={{ marginTop: 6, fontSize: 13, fontWeight: 700, color: p.featured ? 'rgba(255,255,255,.85)' : C.dark }}>{p.bids}</div>
+              <div style={{ marginTop: 6, fontSize: 13, fontWeight: 700, color: p.featured ? 'rgba(255,255,255,.85)' : C.dark }}>{p.credits}</div>
             </div>
             <div className="price-body">
               {p.features.map(f => <div key={f} className="price-feat"><span className="check">✓</span>{f}</div>)}
@@ -950,8 +1232,8 @@ function PricingTab() {
       <div className="two-col-equal" style={{ marginTop: 24, gap: 20 }}>
         <div className="card">
           <div className="card-pad">
-            <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 900, color: C.navy, marginBottom: 10 }}>💰 5% Commission Model</div>
-            <p style={{ fontSize: 14, color:'#555', lineHeight:1.6 }}>Alternatively, contractors pay a <strong>5% fee</strong> on each completed project. A $5,000 job = $250 to QuickQuotesUSA. Scales naturally with project size.</p>
+            <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 900, color: C.navy, marginBottom: 10 }}>💡 How Quote Credits Work</div>
+            <p style={{ fontSize: 14, color:'#555', lineHeight:1.6 }}>Each quote request costs 1 credit. You send an intro message — if the homeowner approves, you submit your formal bid for free. Credits reset monthly.</p>
           </div>
         </div>
         <div className="card">
@@ -990,26 +1272,18 @@ export default function App() {
     }
   }
 
-
   useEffect(() => {
     let mounted = true
 
-    // ── Step 1: Load initial session from localStorage (fast, no network round-trip)
-    console.log('[Auth] calling getSession...')
     supabase.auth.getSession().then(async ({ data: { session: s } }) => {
-      console.log('[Auth] getSession resolved, session:', s ? 'VALID user=' + s.user?.id?.slice(0,8) : 'NULL')
-      if (!mounted) { console.log('[Auth] unmounted, skip'); return }
+      if (!mounted) return
       setSession(s ?? null)
       if (s) fetchProfile(s.user.id)
     }).catch(e => console.error('[Auth] getSession FAILED:', e))
 
-    // ── Step 2: Listen for subsequent auth changes (sign-in, sign-out, token refresh).
-    // Skip INITIAL_SESSION — it's already handled by getSession() above, and firing
-    // it here with a momentary null session is what caused the reload spinner bug.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, s) => {
-      console.log('[Auth] onAuthStateChange:', event, s ? 'VALID' : 'NULL')
       if (!mounted) return
-      if (event === 'INITIAL_SESSION') { console.log('[Auth] skipping INITIAL_SESSION'); return }
+      if (event === 'INITIAL_SESSION') return
       setSession(s ?? null)
       if (s) { fetchProfile(s.user.id) } else { setProfile(null) }
     })
@@ -1029,13 +1303,13 @@ export default function App() {
     </>
   )
 
-  if (!session) return <AuthPage onAuth={() => { /* handled by onAuthStateChange */ }} />
+  if (!session) return <AuthPage onAuth={() => {}} />
 
   const isContractor = profile?.role === 'contractor'
   const TABS = [
     { id:'feed', label:'📋 Feed' },
     ...(isContractor
-      ? [{ id:'bids', label:'💼 My Bids' }]
+      ? [{ id:'requests', label:'📋 My Requests' }]
       : [{ id:'myjobs', label:'📋 My Jobs' }]
     ),
     { id:'profile', label:'👤 Profile' },
@@ -1069,11 +1343,11 @@ export default function App() {
       <div className="page">
         {!profile ? <div className="spinner" /> : (
           <>
-            {tab === 'feed'    && <FeedTab    profile={profile} showToast={showToast} />}
-            {tab === 'myjobs'  && <MyJobsTab  profile={profile} showToast={showToast} />}
-            {tab === 'bids'    && <MyBidsTab  profile={profile} />}
-            {tab === 'profile' && <ProfileTab profile={profile} onUpdate={setProfile} showToast={showToast} />}
-            {tab === 'pricing' && <PricingTab />}
+            {tab === 'feed'     && <FeedTab               profile={profile} showToast={showToast} />}
+            {tab === 'myjobs'   && <MyJobsTab             profile={profile} showToast={showToast} />}
+            {tab === 'requests' && <MyQuoteRequestsTab    profile={profile} showToast={showToast} />}
+            {tab === 'profile'  && <ProfileTab            profile={profile} onUpdate={setProfile} showToast={showToast} />}
+            {tab === 'pricing'  && <PricingTab />}
           </>
         )}
       </div>
