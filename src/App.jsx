@@ -974,25 +974,44 @@ export default function App() {
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3000) }
 
   useEffect(() => {
-    // onAuthChange fires immediately with current session (INITIAL_SESSION event) in Supabase v2.
-    // We rely solely on it to avoid a race condition with getSession() running in parallel.
-    const { data: { subscription } } = onAuthChange(async s => {
+    let mounted = true
+
+    // ── Step 1: Load initial session from localStorage (fast, no network round-trip)
+    supabase.auth.getSession().then(async ({ data: { session: s } }) => {
+      if (!mounted) return
       setSession(s ?? null)
       if (s) {
         try {
           const p = await getProfile(s.user.id)
-          setProfile(p)
+          if (mounted) setProfile(p)
         } catch (e) {
-          // Profile fetch failed — sign out so the spinner doesn't hang forever
+          console.error('Failed to load profile on init:', e)
+          if (mounted) { setSession(null); setProfile(null) }
+        }
+      }
+    })
+
+    // ── Step 2: Listen for subsequent auth changes (sign-in, sign-out, token refresh).
+    // Skip INITIAL_SESSION — it's already handled by getSession() above, and firing
+    // it here with a momentary null session is what caused the reload spinner bug.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, s) => {
+      if (!mounted) return
+      if (event === 'INITIAL_SESSION') return
+      setSession(s ?? null)
+      if (s) {
+        try {
+          const p = await getProfile(s.user.id)
+          if (mounted) setProfile(p)
+        } catch (e) {
           console.error('Failed to load profile, signing out:', e)
-          setSession(null)
-          setProfile(null)
+          if (mounted) { setSession(null); setProfile(null) }
         }
       } else {
         setProfile(null)
       }
     })
-    return () => subscription.unsubscribe()
+
+    return () => { mounted = false; subscription.unsubscribe() }
   }, [])
 
   async function handleSignOut() {
