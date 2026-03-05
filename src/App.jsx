@@ -974,15 +974,20 @@ export default function App() {
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3000) }
 
   useEffect(() => {
-    getSession().then(s => {
-      setSession(s)
-      if (s) getProfile(s.user.id).then(setProfile)
-    })
+    // onAuthChange fires immediately with current session (INITIAL_SESSION event) in Supabase v2.
+    // We rely solely on it to avoid a race condition with getSession() running in parallel.
     const { data: { subscription } } = onAuthChange(async s => {
-      setSession(s)
+      setSession(s ?? null)
       if (s) {
-        const p = await getProfile(s.user.id)
-        setProfile(p)
+        try {
+          const p = await getProfile(s.user.id)
+          setProfile(p)
+        } catch (e) {
+          // Profile fetch failed — sign out so the spinner doesn't hang forever
+          console.error('Failed to load profile, signing out:', e)
+          setSession(null)
+          setProfile(null)
+        }
       } else {
         setProfile(null)
       }
