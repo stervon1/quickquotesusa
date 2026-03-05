@@ -506,21 +506,6 @@ function ViewBidsModal({ job, onClose, showToast, onAccepted }) {
   const [loading, setLoading] = useState(true)
 
 
-  async function fetchProfile(userId, attempt = 0) {
-    try {
-      const p = await getProfile(userId)
-      setProfile(p)
-    } catch (e) {
-      if (attempt < 4) {
-        setTimeout(() => fetchProfile(userId, attempt + 1), 500)
-      } else {
-        console.error('Profile not found after retries:', e)
-        await signOut()
-        setSession(null)
-        setProfile(null)
-      }
-    }
-  }
   useEffect(() => {
     getBidsForJob(job.id).then(setBids).finally(() => setLoading(false))
   }, [job.id])
@@ -988,6 +973,23 @@ export default function App() {
   const [toast, setToast] = useState('')
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3000) }
+
+  async function fetchProfile(userId, attempt = 0) {
+    try {
+      const p = await getProfile(userId)
+      setProfile(p)
+    } catch (e) {
+      if (attempt < 4) {
+        setTimeout(() => fetchProfile(userId, attempt + 1), 500)
+      } else {
+        console.error('Profile not found after retries:', e)
+        await signOut()
+        setSession(null)
+        setProfile(null)
+      }
+    }
+  }
+
 
   useEffect(() => {
     let mounted = true
