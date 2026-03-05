@@ -977,26 +977,31 @@ export default function App() {
     let mounted = true
 
     // ── Step 1: Load initial session from localStorage (fast, no network round-trip)
+    console.log('[Auth] calling getSession...')
     supabase.auth.getSession().then(async ({ data: { session: s } }) => {
-      if (!mounted) return
+      console.log('[Auth] getSession resolved, session:', s ? 'VALID user=' + s.user?.id?.slice(0,8) : 'NULL')
+      if (!mounted) { console.log('[Auth] unmounted, skip'); return }
       setSession(s ?? null)
       if (s) {
         try {
+          console.log('[Auth] calling getProfile for', s.user?.id)
           const p = await getProfile(s.user.id)
+          console.log('[Auth] getProfile result:', p ? 'OK role=' + p.role : 'null')
           if (mounted) setProfile(p)
         } catch (e) {
-          console.error('Failed to load profile on init:', e)
+          console.error('[Auth] getProfile FAILED:', e.message, e)
           if (mounted) { setSession(null); setProfile(null) }
         }
       }
-    })
+    }).catch(e => console.error('[Auth] getSession FAILED:', e))
 
     // ── Step 2: Listen for subsequent auth changes (sign-in, sign-out, token refresh).
     // Skip INITIAL_SESSION — it's already handled by getSession() above, and firing
     // it here with a momentary null session is what caused the reload spinner bug.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, s) => {
+      console.log('[Auth] onAuthStateChange:', event, s ? 'VALID' : 'NULL')
       if (!mounted) return
-      if (event === 'INITIAL_SESSION') return
+      if (event === 'INITIAL_SESSION') { console.log('[Auth] skipping INITIAL_SESSION'); return }
       setSession(s ?? null)
       if (s) {
         try {
