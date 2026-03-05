@@ -1,7 +1,7 @@
 // src/App.jsx  — QuickQuotesUSA full MVP
 import { useState, useEffect, useRef } from 'react'
 import {
-  supabase, signUp, signIn, signOut, onAuthChange,
+  supabase, signUp, signIn, signOut, onAuthChange, getSession,
   getProfile, getJobs, getMyJobs, createJob, uploadJobPhotos,
   getBidsForJob, getMyBids, submitBid, updateBidStatus,
   getTopContractors, getPortfolio, getReviews,
@@ -177,13 +177,13 @@ select.input{cursor:pointer}
 `
 
 // ── HELPERS ──────────────────────────────────────────────────
-const TRADES = ['Flooring','Roofing','Plumbing','HVAC','Electrical','Painting','General','Landscaping','Masonry','Carpentry']
+const TRADES = ['Flooring','Roofing','Plumbing','HVAC','Electrical','Painting','General','Landscaping','Masonry','Carpentry','Decks & Patios']
 const AVATAR_COLORS = ['#4BBFED','#E84B4B','#1B2A6B','#22C55E','#F59E0B','#8B5CF6','#EC4899']
 const avatarColor = (str = '') => AVATAR_COLORS[str.charCodeAt(0) % AVATAR_COLORS.length]
 const initials = (name = '') => name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2)
 const fmt$ = (n) => n != null ? `$${Number(n).toLocaleString()}` : '—'
 const fmtDate = (d) => new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric'})
-const TRADE_EMOJI = {Flooring:'🪵',Roofing:'🏚️',Plumbing:'🔧',HVAC:'❄️',Electrical:'⚡',Painting:'🎨',General:'🔨',Landscaping:'🌿',Masonry:'🧱',Carpentry:'🪚'}
+const TRADE_EMOJI = {Flooring:'🪵',Roofing:'🏚️',Plumbing:'🔧',HVAC:'❄️',Electrical:'⚡',Painting:'🎨',General:'🔨',Landscaping:'🌿',Masonry:'🧱',Carpentry:'🪚','Decks & Patios':'🪟'}
 
 function Stars({ rating = 0, size = 14 }) {
   const full = Math.round(rating)
